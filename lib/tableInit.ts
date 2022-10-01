@@ -91,14 +91,6 @@ export const handler = async (
           "CALL mysql.rds_set_configuration('binlog retention hours', 24);"
         );
 
-        // create a user that will be used for iam-based access
-        await connection.query(
-          "CREATE USER `binlog-streamer` IDENTIFIED WITH AWSAuthenticationPlugin as 'RDS'"
-        );
-        await connection.query(
-          "GRANT SELECT, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'ss-binlog'@'%'"
-        );
-
         return { ...event, PhysicalResourceId: "retention", Status: "SUCCESS" };
       } catch (e) {
         console.error(`retention initialization failed!`, e);

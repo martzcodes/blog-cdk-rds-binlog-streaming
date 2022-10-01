@@ -56,14 +56,12 @@ export class BlogCdkMysqlStreamStack extends cdk.Stack {
       },
     });
 
-    const dbUser = "binlog-streamer";
     const tableInitFn = new NodejsFunction(this, `tableInitFn`, {
       entry: `${__dirname}/tableInit.ts`,
       timeout: Duration.minutes(5),
       runtime: Runtime.NODEJS_16_X,
       environment: {
         SECRET_ARN: cluster.secret!.secretArn,
-        DB_USER: dbUser,
       },
       logRetention: RetentionDays.ONE_DAY,
     });
