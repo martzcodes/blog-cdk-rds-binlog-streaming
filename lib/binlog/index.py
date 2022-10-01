@@ -81,6 +81,7 @@ def handler(event, context):
       row_keys = {}
       normalized_row = json.loads(json.dumps(row, indent=None, sort_keys=True, default=str, ensure_ascii=False), parse_float=Decimal)
       delta = {}
+      columns_changed = {}
       if type(binlogevent).__name__ == "UpdateRowsEvent":
         row_keys = primary_keys(binlogevent.primary_key, normalized_row['after_values'])
 
@@ -92,6 +93,7 @@ def handler(event, context):
           if normalized_row["after_values"][key] != normalized_row["before_values"][key]:
             after[key] = normalized_row["after_values"][key]
             before[key] = normalized_row["before_values"][key]
+            columns_changed[key] = True
         # store them as a string in case we want to store them in dynamodb and avoid type mismatches
         delta["after"] = json.dumps(after, indent=None, sort_keys=True, default=str, ensure_ascii=False)
         delta["before"] = json.dumps(before, indent=None, sort_keys=True, default=str, ensure_ascii=False)
@@ -107,6 +109,7 @@ def handler(event, context):
 
       if type(binlogevent).__name__ == "UpdateRowsEvent":
         event["delta"] = delta
+        event["columnsChanged"] = columns_changed.keys()
 
       dataToStore[binlogevent.table].append(event)
       dataToStoreCount[binlogevent.table] += 1
