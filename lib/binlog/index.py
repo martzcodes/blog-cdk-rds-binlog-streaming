@@ -3,9 +3,6 @@
 import json
 import boto3
 import os
-import time
-import datetime
-import traceback
 
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import (
@@ -15,16 +12,12 @@ from pymysqlreplication.row_event import (
 )
 from decimal import Decimal
 
-from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
-
 s3 = boto3.client('s3')
 secretsmanager = boto3.client('secretsmanager')
 
 def primary_keys(primaryKey, data):
   keys = []
-  columns = ''
-  values = ''
-  types = ''
+  output = {}
   if type(primaryKey).__name__ != 'tuple':
     keys = [primaryKey]
   else:
@@ -36,18 +29,8 @@ def primary_keys(primaryKey, data):
         keys.append(key)
   keys.sort()
   for idx, key in enumerate(keys):
-    if (idx != 0):
-      columns += '-'
-      values += '-'
-      types += '-'
-    columns += key
-    values += str(data[key])
-    types += type(data[key]).__name__
-  return {
-    "columns": columns,
-    "values": values,
-    "types": types
-  }
+    output["key"] = data[key]
+  return output
 
 def handler(event, context):
   get_secret_value_response = secretsmanager.get_secret_value(SecretId=os.environ.get('SECRET_NAME'))
@@ -59,9 +42,6 @@ def handler(event, context):
     "user": db['username'],
     "passwd": db['password']
   }
-
-  ts = TypeSerializer()
-  week = datetime.datetime.today() + datetime.timedelta(days=7)
 
   skipToTimestamp = None
   if os.environ.get('SKIP_TO_TIMESTAMP_ENABLED') == '1':
@@ -87,6 +67,9 @@ def handler(event, context):
   dataToStoreCount = {}
   dataToStoreLastTimestamp = {}
   for binlogevent in stream:
+    # if skipToTimestamp is enabled this should skip already processed events from the previous run
+    if binlogevent.timestamp == skipToTimestamp:
+      continue
     if binlogevent.table not in dataToStore:
       dataToStore[binlogevent.table] = []
       dataToStoreCount[binlogevent.table] = 0
@@ -95,32 +78,31 @@ def handler(event, context):
       totalEventCount += 1
       if totalEventCount % 1000 == 0:
         print("Processed {} with {} errors".format(totalEventCount, errorCount))
-      row_keys = { "columns": "unknown", "values": "unknown", "types": "unknown"}
+      row_keys = {}
       normalized_row = json.loads(json.dumps(row, indent=None, sort_keys=True, default=str, ensure_ascii=False), parse_float=Decimal)
       delta = {}
       if type(binlogevent).__name__ == "UpdateRowsEvent":
         row_keys = primary_keys(binlogevent.primary_key, normalized_row['after_values'])
+
+        # the binlog includes all values (changed or not)
+        # filter down to only the changed values
         after = {}
         before = {}
         for key in normalized_row["after_values"].keys():
           if normalized_row["after_values"][key] != normalized_row["before_values"][key]:
             after[key] = normalized_row["after_values"][key]
             before[key] = normalized_row["before_values"][key]
+        # store them as a string in case we want to store them in dynamodb and avoid type mismatches
         delta["after"] = json.dumps(after, indent=None, sort_keys=True, default=str, ensure_ascii=False)
         delta["before"] = json.dumps(before, indent=None, sort_keys=True, default=str, ensure_ascii=False)
       else:
         row_keys = primary_keys(binlogevent.primary_key, normalized_row['values'])
 
       event = {
-        "PK": "{0}#{1}".format(binlogevent.schema, binlogevent.table),
-        "SK": "{0}#{1}#{2}".format(row_keys['values'], binlogevent.timestamp, type(binlogevent).__name__),
-        "primaryIdColumns": row_keys['columns'],
-        "primaryIdValues": row_keys['values'],
-        "primaryIdTypes": row_keys['types'],
+        "keys": row_keys,
         "schema": binlogevent.schema,
         "table": binlogevent.table,
         "type": type(binlogevent).__name__,
-        "ttl": int(time.mktime(week.timetuple())),
       }
 
       if type(binlogevent).__name__ == "UpdateRowsEvent":
