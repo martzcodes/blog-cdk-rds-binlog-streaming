@@ -29,10 +29,11 @@ def primary_keys(primaryKey, data):
         keys.append(key)
   keys.sort()
   for idx, key in enumerate(keys):
-    output["key"] = data[key]
+    output[key] = data[key]
   return output
 
 def handler(event, context):
+  skipToTimestamp = None
   get_secret_value_response = secretsmanager.get_secret_value(SecretId=os.environ.get('SECRET_ARN'))
   secret_string = get_secret_value_response['SecretString']
   db = json.loads(secret_string)
@@ -43,17 +44,15 @@ def handler(event, context):
     "passwd": db['password']
   }
 
-  skipToTimestamp = None
+  get_meta = s3.get_object(Bucket=os.environ.get("BUCKET_NAME"),Key="serverId.json")
+  server_id = json.loads(get_meta['Body'].read().decode('utf-8'))["@@server_id"]
+
   if os.environ.get('SKIP_TO_TIMESTAMP_ENABLED') == '1':
     # read meta file from s3
     get_meta = s3.get_object(Bucket=os.environ.get("BUCKET_NAME"),Key="meta.json")
     meta_json = json.loads(get_meta['Body'].read().decode('utf-8'))
     skipToTimestamp=int(meta_json['timestamp']) # make sure it's an int and not a decimal
   print("skipToTimestamp: {} {}".format(skipToTimestamp, type(skipToTimestamp).__name__))
-
-  get_meta = s3.get_object(Bucket=os.environ.get("BUCKET_NAME"),Key="serverId.json")
-  server_id = json.loads(get_meta['Body'].read().decode('utf-8'))["@@server_id"]
-
 
   stream = BinLogStreamReader(
     connection_settings=connectionSettings,
@@ -114,7 +113,7 @@ def handler(event, context):
 
       if type(binlogevent).__name__ == "UpdateRowsEvent":
         event["delta"] = delta
-        event["columnsChanged"] = columns_changed.keys()
+        event["columnsChanged"] = [col for col in columns_changed]
 
       dataToStore[binlogevent.table].append(event)
       dataToStoreCount[binlogevent.table] += 1
@@ -138,7 +137,7 @@ def handler(event, context):
     print("done with individual tables")
     
     s3.put_object(
-      Body=json.dumps({ "lastTimestamps": dataToStoreLastTimestamp, "counts": dataToStoreCount, "tables": dataToStore}, indent=None, sort_keys=True, default=str),
+      Body=json.dumps({ "timestamp": next_timestamp, "lastTimestamps": dataToStoreLastTimestamp, "counts": dataToStoreCount }, indent=None, sort_keys=True, default=str),
       Bucket=os.environ.get("BUCKET_NAME"),
       Key="meta.json")
     print("Done with meta file")
