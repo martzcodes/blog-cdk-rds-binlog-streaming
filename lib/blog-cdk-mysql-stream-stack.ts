@@ -20,26 +20,11 @@ import { Bucket, BlockPublicAccess, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { Provider } from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 import { join } from "path";
-import {
-  PythonFunction,
-} from "@aws-cdk/aws-lambda-python-alpha";
+import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha";
 
 export class BlogCdkMysqlStreamStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
-
-    const binlogBucket = new Bucket(this, `binlog-bucket`, {
-      removalPolicy: RemovalPolicy.DESTROY,
-      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
-      objectOwnership: ObjectOwnership.BUCKET_OWNER_ENFORCED,
-      lifecycleRules: [
-        {
-          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
-          expiration: cdk.Duration.days(7),
-        },
-      ],
-      autoDeleteObjects: true
-    });
 
     const vpc = new Vpc(this, "Vpc");
     const cluster = new DatabaseCluster(this, "Database", {
@@ -51,10 +36,7 @@ export class BlogCdkMysqlStreamStack extends cdk.Stack {
       credentials: Credentials.fromGeneratedSecret("clusteradmin"),
       iamAuthentication: true,
       instanceProps: {
-        instanceType: InstanceType.of(
-          InstanceClass.T3,
-          InstanceSize.SMALL
-        ),
+        instanceType: InstanceType.of(InstanceClass.T3, InstanceSize.SMALL),
         vpcSubnets: {
           subnetType: SubnetType.PRIVATE_WITH_EGRESS,
         },
@@ -66,6 +48,19 @@ export class BlogCdkMysqlStreamStack extends cdk.Stack {
       },
     });
     cluster.connections.allowDefaultPortInternally();
+
+    const binlogBucket = new Bucket(this, `binlog-bucket`, {
+      removalPolicy: RemovalPolicy.DESTROY,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      lifecycleRules: [
+        {
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
+          expiration: cdk.Duration.days(7),
+        },
+      ],
+      autoDeleteObjects: true,
+    });
 
     const tableInitFn = new NodejsFunction(this, `tableInitFn`, {
       entry: `${__dirname}/tableInit.ts`,
@@ -80,6 +75,7 @@ export class BlogCdkMysqlStreamStack extends cdk.Stack {
       securityGroups: cluster.connections.securityGroups,
     });
     cluster.secret!.grantRead(tableInitFn);
+    binlogBucket.grantWrite(tableInitFn);
 
     const tableInitProvider = new Provider(this, `tableInitProvider`, {
       onEventHandler: tableInitFn,
@@ -91,7 +87,6 @@ export class BlogCdkMysqlStreamStack extends cdk.Stack {
     });
 
     tableInitResource.node.addDependency(cluster);
-    binlogBucket.grantWrite(tableInitFn);
 
     const binlogFn = new PythonFunction(this, `pybinlog`, {
       entry: join(__dirname, "binlog"),
