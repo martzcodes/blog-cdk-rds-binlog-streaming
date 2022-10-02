@@ -21,6 +21,8 @@ import { Provider } from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 import { join } from "path";
 import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha";
+// import { Rule, Schedule } from "aws-cdk-lib/aws-events";
+// import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 
 export class BlogCdkMysqlStreamStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -103,5 +105,10 @@ export class BlogCdkMysqlStreamStack extends cdk.Stack {
     });
     binlogBucket.grantReadWrite(binlogFn);
     cluster.secret!.grantRead(binlogFn);
+
+    // new Rule(this, `Schedule`, {
+    //   schedule: Schedule.rate(Duration.minutes(15)),
+    //   targets: [new LambdaFunction(binlogFn)]
+    // });
   }
 }
