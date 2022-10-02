@@ -33,7 +33,7 @@ def primary_keys(primaryKey, data):
   return output
 
 def handler(event, context):
-  get_secret_value_response = secretsmanager.get_secret_value(SecretId=os.environ.get('SECRET_NAME'))
+  get_secret_value_response = secretsmanager.get_secret_value(SecretId=os.environ.get('SECRET_ARN'))
   secret_string = get_secret_value_response['SecretString']
   db = json.loads(secret_string)
   connectionSettings = {
@@ -51,9 +51,13 @@ def handler(event, context):
     skipToTimestamp=int(meta_json['timestamp']) # make sure it's an int and not a decimal
   print("skipToTimestamp: {} {}".format(skipToTimestamp, type(skipToTimestamp).__name__))
 
+  get_meta = s3.get_object(Bucket=os.environ.get("BUCKET_NAME"),Key="serverId.json")
+  server_id = json.loads(get_meta['Body'].read().decode('utf-8'))["@@server_id"]
+
+
   stream = BinLogStreamReader(
     connection_settings=connectionSettings,
-    server_id=int(os.environ.get('SERVER_ID')),
+    server_id=int(server_id),
     resume_stream=False,
     only_events=[DeleteRowsEvent, WriteRowsEvent, UpdateRowsEvent], # inserts, updates and deletes
     only_tables=None, # a list with tables to watch
@@ -66,6 +70,7 @@ def handler(event, context):
   dataToStore = {}
   dataToStoreCount = {}
   dataToStoreLastTimestamp = {}
+  next_timestamp = None
   for binlogevent in stream:
     # if skipToTimestamp is enabled this should skip already processed events from the previous run
     if binlogevent.timestamp == skipToTimestamp:
@@ -114,28 +119,29 @@ def handler(event, context):
       dataToStore[binlogevent.table].append(event)
       dataToStoreCount[binlogevent.table] += 1
       dataToStoreLastTimestamp[binlogevent.table] = binlogevent.timestamp
-      dataToStore["timestamp"] = binlogevent.timestamp
+      next_timestamp = binlogevent.timestamp
   print("COMPLETED {} events with {} errors".format(totalEventCount, errorCount))
-  print(json.dumps(dataToStoreCount, indent=None, sort_keys=True, default=str))
+  print(json.dumps(dataToStore, indent=None, sort_keys=True, default=str))
 
-  s3.put_object(
-    Body=json.dumps({ "lastTimestamps": dataToStoreLastTimestamp, "counts": dataToStoreCount, "tables": dataToStore}, indent=None, sort_keys=True, default=str),
-    Bucket=os.environ.get("BUCKET_NAME"),
-    Key="binlog-{}.json".format(str(meta_key["timestamp"])))
-  print("Done with combined file")
-  
-  for s3Table in dataToStore.keys():
+  if next_timestamp:
     s3.put_object(
-    Body=json.dumps({ "lastTimestamp": dataToStoreLastTimestamp, "count": dataToStoreCount[s3Table], "events": dataToStore[s3Table]}, indent=None, sort_keys=True, default=str),
-    Bucket=os.environ.get("BUCKET_NAME"),
-    Key="{}/binlog-{}.json".format(s3Table, str(meta_key["timestamp"])))
-  print("done with individual tables")
-  
-  s3.put_object(
-    Body=json.dumps({ "lastTimestamps": dataToStoreLastTimestamp, "counts": dataToStoreCount, "tables": dataToStore}, indent=None, sort_keys=True, default=str),
-    Bucket=os.environ.get("BUCKET_NAME"),
-    Key="meta.json")
-  print("Done with meta file")
+      Body=json.dumps({ "lastTimestamps": dataToStoreLastTimestamp, "counts": dataToStoreCount, "tables": dataToStore}, indent=None, sort_keys=True, default=str),
+      Bucket=os.environ.get("BUCKET_NAME"),
+      Key="binlog-{}.json".format(str(next_timestamp)))
+    print("Done with combined file")
+    
+    for s3Table in dataToStore.keys():
+      s3.put_object(
+      Body=json.dumps({ "lastTimestamp": dataToStoreLastTimestamp, "count": dataToStoreCount[s3Table], "events": dataToStore[s3Table]}, indent=None, sort_keys=True, default=str),
+      Bucket=os.environ.get("BUCKET_NAME"),
+      Key="{}/table-binlog-{}.json".format(s3Table, str(next_timestamp)))
+    print("done with individual tables")
+    
+    s3.put_object(
+      Body=json.dumps({ "lastTimestamps": dataToStoreLastTimestamp, "counts": dataToStoreCount, "tables": dataToStore}, indent=None, sort_keys=True, default=str),
+      Bucket=os.environ.get("BUCKET_NAME"),
+      Key="meta.json")
+    print("Done with meta file")
 
 if __name__ == "__main__":
    handler()
